@@ -101,12 +101,15 @@ static void draw_board(board *b, cursor *c, bool *is_on_first_player,
                           maybe_winner->kind == horizontal &&
                           maybe_winner->index == row;
     for (unsigned int column = 0; column < b->columns; column += 1) {
+      bool is_winning_column = maybe_winner != NULL &&
+                               maybe_winner->kind == vertical &&
+                               maybe_winner->index == column;
       unsigned char *piece = piece_at(b, row, column);
       bool is_last_column = column == b->columns - 1;
       bool is_selected = c != NULL && cursor_index == visited;
       if (is_selected && is_on_first_player != NULL)
         printf(*is_on_first_player ? ANSI_COLOR_GREEN : ANSI_COLOR_RED);
-      if (is_winning_row)
+      if (is_winning_row || is_winning_column)
         printf(maybe_winner->player == x ? ANSI_COLOR_GREEN : ANSI_COLOR_RED);
       if (is_selected && *piece == unclaimed)
         printf("?");
@@ -114,7 +117,7 @@ static void draw_board(board *b, cursor *c, bool *is_on_first_player,
         printf(" ");
       else
         printf("%s", *piece == x_space ? "x" : "o");
-      if (is_selected || is_winning_row)
+      if (is_selected || is_winning_row || is_winning_column)
         printf(ANSI_COLOR_RESET);
       if (!is_last_column) {
         printf("|");
@@ -162,6 +165,8 @@ static cursor_move_dir read_input(void) {
 //
 // this function will do nothing when called with move as invalid or confirm, as
 // those are handled separately by the parent
+//
+// TODO(haze): fix cursor movement bug when you have uneven row/col
 static void move_cursor_in_direction(board *b, cursor *c,
                                      cursor_move_dir move) {
   switch (move) {
@@ -190,27 +195,73 @@ static void move_cursor_in_direction(board *b, cursor *c,
   }
 }
 
-void check_win(board *b, winner *win) {
-  // check all horizontals
-  for (unsigned int row = 0; row < b->rows; row += 1) {
-    tile_type suggested_winner = *piece_at(b, row, 0);
-    if (suggested_winner == unclaimed)
-      continue;
-    bool is_win = true;
-    for (unsigned int column = 1; column < b->columns; column += 1) {
-      tile_type piece = *piece_at(b, row, column);
-      if (piece != suggested_winner) {
-        is_win = false;
-        break;
+bool check_vertical_win(board *b, winner *winner) {
+  fputs("checking\n", stderr);
+  for (unsigned int column = 0; column < b->columns; column += 1) {
+    tile_type first_tile = b->tiles[column];
+    bool win = true;
+    if (first_tile != unclaimed) {
+      unsigned int row;
+      unsigned long end_idx = column + (b->rows * (b->columns - 1));
+      for (row = column + b->rows; row <= end_idx; row += b->rows) {
+        fprintf(stderr, "row=%d\n", row);
+        tile_type tile = b->tiles[row];
+        win = win && (tile == first_tile);
+        if (tile == unclaimed) {
+          fputs("failed unclaim\n", stderr);
+          break;
+        }
+        if (!win) {
+          fputs("failed win\n", stderr);
+          break;
+        }
+      }
+      fprintf(stderr, "win=%d, row=%d, end=%lu\n", win, row, end_idx);
+      if (win && (row - b->rows) == end_idx) {
+        winner->player = first_tile == x_space ? x : o;
+        winner->index = column;
+        winner->kind = vertical;
+        return true;
       }
     }
-    if (is_win) {
-      win->player = suggested_winner == x_space ? x : o;
-      win->kind = horizontal;
-      win->index = row;
-      break;
+  }
+  return false;
+}
+
+bool check_horizontal_win(board *b, winner *winner) {
+  for (unsigned int row = 0; row < b->rows; row += 1) {
+    unsigned long offset = b->rows * row;
+    tile_type first_tile = b->tiles[offset];
+    bool win = true;
+    if (first_tile != unclaimed) {
+      unsigned int column;
+      for (column = offset + 1; column <= offset + b->columns; column += 1) {
+        tile_type tile = b->tiles[column];
+        if (tile == unclaimed)
+          break;
+        win = win && (tile == first_tile);
+        if (!win)
+          break;
+      }
+      if (column == offset + b->columns) {
+        winner->player = first_tile == x_space ? x : o;
+        winner->index = row;
+        winner->kind = horizontal;
+        return true;
+      }
     }
   }
+  return false;
+}
+
+// Code duplication is based :^)
+// TODO(haze): deduplicate using translation later
+void check_win(board *b, winner *winner) {
+  // check for horizontal wins
+  if (check_horizontal_win(b, winner))
+    return;
+  if (check_vertical_win(b, winner))
+    return;
 }
 
 static void loop(board *b) {
@@ -251,7 +302,7 @@ static void loop(board *b) {
 }
 
 int main(void) {
-  board *b = make_board(3, 3);
+  board *b = make_board(10, 10);
   loop(b);
   free_board(b);
   return EXIT_SUCCESS;
